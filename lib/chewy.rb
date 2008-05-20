@@ -1,54 +1,47 @@
+#####################
+# In addtition to being a fierce warrior, Chewbotca had extensive and unbeatable know-how.
+# Feel the power of the Source?
+## an ab5tract[:ceasless] production
+## GPL v2 or higher
+#####################
+# Automatic tuning to match workload characteristics is contemplated.[citation needed] - a noble, if obstinate, goal
+
+#chewbotca specific
+require 'raw_irc'
+
+#standarder fare
 require 'socket'
+require 'ipaddr'
+require 'eventmachine'
 
 module Chewy
 
-  # Class: Raw
-  # Desc:  This class represents the raw IRC commands coming in through the socket.
-  class Raw
-    attr_accessor :sender, :body, :type, :to, :raw, :cmd, :args
-
-    def initialize(raw, bot = nil)
-    begin
-      pm = "not_nil"
-      (pm = nil) unless (m = raw.match(Raw.pm_regex))
-      @type = :server if pm.nil?
-      
-      unless @type == :server
-        @raw                = raw   # also, m[0]
-        @sender             = {}
-        @sender[:nick]      = m[1]
-        @sender[:name]      = m[2]
-        @sender[:hostmask]  = m[3]
-        @to                 = m[4]
-        @body               = m[5]
-
-        # the presence of '#' means the message was bound for a channel
-        #   otherwise, it's a private message to a user
-        @type = @to.match( /^#/ ) ? :chan : :pm
-      
-        # check to see if the message is ctcp
-        if (@type == :pm and @body[/\01/])
-          @type = :ctcp
-        end
-      else
-       bot.pong(raw) if raw[0..3] == "PING"
-      end
-    rescue => er
-      puts "Raw failed to initialize: #{er.to_s}"
-    end
-    end
+  # Module: DCC_Chat
+  # Desc: Instantiated by EventMachine
+  class DCC_Chat < EventMachine::Connection
+    attr_reader :input
+    @input = []
     
-    def Raw.pm_regex
-      @pm_regex ||= /^\:(.+)\!\~?(.+)\@(.+) PRIVMSG (\#?.+) \:(.+)/
+    def receive_data(data)
+      @input ||= []
+      
+      unless data =~ /^EOF/
+        @input << data
+      else
+        puts @input
+        close_connection
+        EventMachine::stop
+      end
     end
-
   end
 
     # Class: Bot
     # Desc: This Bot class exists for the sake of extensibility (multiple bots in the future, etc)
 
   class Bot
-    attr_accessor :server, :port, :nick, :name, :user, :pass, :chan, :chans, :socket, :commands
+    #include Observable 
+    
+    attr_reader :server, :port, :nick, :name, :user, :chan, :chans, :socket, :commands
                         
     def initialize(config)
       @server = config[:server]
@@ -57,6 +50,9 @@ module Chewy
       @nick   = config[:nick]
       @pass   = config[:password]
       @name   = config[:name]
+      
+      # our ip as visible from the outside world, so we can perform DCC chats and sends
+      @host_ip = IPAddr.new(getip)
       
       # the hash for the channel is not included in the command line, but may have been specified in 
       # config file
@@ -81,6 +77,11 @@ module Chewy
            
       watch_for "IDENTIFY" # wait until we are asked to IDENTIFY, then...
       @socket.puts "PRIVMSG NickServ :IDENTIFY #{@pass}" if @pass  #...identify, if we have a password to use
+      
+      puts @host_ip
+      
+      #watch_for "accepted"
+      #dcc("chewy")
     end
     
     def join(channel = nil, quit_prev = false)
@@ -94,17 +95,31 @@ module Chewy
       watch
       #@chans = Thread.new { watch }
     end
-  
+
+    
+    # The Bot observes commands that request observation.
+    
+    def update(cmd)
+      @yield = true  if ( cmd.yield2me == true )
+      @yield_to = cmd
+    end
+    
+    
     def watch
     begin
       # read the socket, scan the content via Raw class and parse that joint
       while true
         if IO.select([@socket])
           x = @socket.gets
-          puts x
+          
+            puts x  # this will go to a log once we are out of  debug
+          
           raw = Raw.new(x, self)
-          puts raw.body
-          parse_command raw unless raw.type == :server
+          if @yield
+            @yield_to.catch(raw)
+          else
+            parse_command raw unless raw.type == :server
+          end
         end
       end
     rescue  => error
@@ -128,10 +143,44 @@ module Chewy
       @socket.close
     end
     
-    def say(to, msg)
-      @socket.puts "PRIVMSG #{to} :#{msg}"
+    def dcc(to)
+      local = IPAddr.new "127.0.0.1"
+      port = [1856].pack("v*").unpack("v*")
+      
+      @socket.puts "PRIVMSG #{to} :\01DCC CHAT chat #{local.to_i} #{port}\01"
+      
+      conns = []
+      
+      EventMachine::run {
+          EventMachine::start_server( "127.0.0.1", 1856, Chewy::DCC_Chat) do |conn|
+            conns << conn
+          end
+        } 
+        
+        conns[0].input
     end
     
+    def getip
+      con = Net::HTTP.new('checkip.dyndns.org', 80)
+      resp,body = con.get("/", nil)
+      ip = body.match(/\d+\.\d+\.\d+\.\d+/)
+      
+      ip[0]
+    end
+    
+    def say(to, msg)
+      i = 0
+      splitmsg = msg.split(/\n/)
+      splitmsg.each do |part|
+        i += 1
+        @socket.puts "PRIVMSG #{to} :#{part}"
+        sleep(0.2)
+        if i == 5
+            return
+        end
+      end
+    end
+
     def parse_command(raw) #:nodoc:
       begin
       is_master = master? raw.sender[:nick]
@@ -154,7 +203,7 @@ module Chewy
                 params = message.sub(/^\S+\s+(.*)$/, '\1')
               end
 
-              response = command[:callback].call(raw.sender[:nick], params)
+              response = command[:callback].call(raw, params)
               say(to, response) unless response.nil?
               
               return

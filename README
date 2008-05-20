@@ -4,6 +4,4 @@ Included is lib/chewy.example.rb, which you will want to tweak to your own setti
 
 Thanks to: matzbot, for inspiration, and Jabber::Bot . 
 
-Stay tuned for Observer patterns...
-
-Happy easter 
+New: EventMachine based DCC connections. This will allow in-IRC pasting into pasties, as well as full cheatsheets. As of the current precise moment, pastie command works but not for a long period of time. Also, it is stuck to localhost right now. You can easily switch that by sending #{@host_ip.to_i} in the PRIVMSG in Chewy::Bot::dcc
